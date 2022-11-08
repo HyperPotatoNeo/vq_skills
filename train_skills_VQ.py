@@ -78,9 +78,10 @@ load_from_checkpoint = False
 per_element_sigma = False
 
 #env_name = 'antmaze-large-diverse-v0'
-env_name = 'kitchen-partial-v0'
+#env_name = 'antmaze-medium-diverse-v0'
+#env_name = 'kitchen-partial-v0'
 #env_name = 'kitchen-mixed-v0'
-#env_name = 'maze2d-large-v1'
+env_name = 'maze2d-large-v1'
 env = gym.make(env_name)
 
 dataset_file = None

@@ -470,8 +470,6 @@ class SkillModelVectorQuantized(nn.Module):
         # STEP 3. Pass z_sampled and states through decoder 
         s_T_mean, s_T_sig, a_means, a_sigs = self.decoder(states,actions,z_sampled) # 5/4/22 add actions as argument here for autoregressive policy
 
-
-
         return s_T_mean, s_T_sig, a_means, a_sigs, z_post_means, z_post_sigs
 
 
@@ -525,51 +523,39 @@ class SkillModelVectorQuantized(nn.Module):
         return embedding_loss, a_loss, sT_loss, total_loss
             
 
-    def get_expected_cost_for_cem(self, s0, skill_seq, goal_state, use_epsilons=True, plot=False, length_cost=0, var_pen=0.0):
+    def get_expected_cost_vq(self, s0, skill_idx, goal_state):
         '''
         s0 is initial state, batch_size x 1 x s_dim
         skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
         '''
         # tile s0 along batch dimension
         #s0_tiled = s0.tile([1,batch_size,1])
-        batch_size = s0.shape[0]
+        batch_size = skill_idx.shape[0]
         goal_state = torch.cat(batch_size * [goal_state],dim=0)
-        s_i = s0
+        s_i = s0[:batch_size]
         
-        skill_seq_len = skill_seq.shape[1]
-        pred_states = [s_i]
-        # costs = torch.zeros(batch_size,device=s0.device)
+        skill_seq_len = skill_idx.shape[1]
+        skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
         costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
-        # costs = (lengths == 0)*torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
-        var_cost = 0.0
+
         for i in range(skill_seq_len):
-            
-            # z_i = skill_seq[:,i:i+1,:] # might need to reshape
-            if use_epsilons:
-                mu_z, sigma_z = self.prior(s_i)
-                
-                z_i = mu_z + sigma_z*skill_seq[:,i:i+1,:]
-            else:
-                z_i = skill_seq[:,i:i+1,:]
+            skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[skill_idx[:,i]]
+            z_i = skill_seq[:,i:i+1,:]
             
             s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
 
-            var_cost += var_pen*var_cost 
-            
-            # sample s_i+1 using reparameterize
             s_sampled = s_mean
-            # s_sampled = self.reparameterize(s_mean, s_sig)
             s_i = s_sampled
 
-            cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze() + (i+1)*length_cost
+            cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
             costs.append(cost_i)
             
-            pred_states.append(s_i)
+            #pred_states.append(s_i)
         
         costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
         costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
 
-        return costs + var_cost
+        return costs
 
     
     def reparameterize(self, mean, std):
