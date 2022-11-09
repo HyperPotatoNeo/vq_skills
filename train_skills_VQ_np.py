@@ -32,6 +32,7 @@ def test(model):
 	s_T_losses = []
 	a_losses = []
 	embedding_losses = []
+	prior_losses = []
 
 	with torch.no_grad():
 		for batch_id, data in enumerate(test_loader):
@@ -39,22 +40,23 @@ def test(model):
 			states = data[:,:,:model.state_dim]  # first state_dim elements are the state
 			actions = data[:,:,model.state_dim:]	 # rest are actions
 
-			embedding_loss, a_loss, sT_loss, total_loss  = model.get_losses(states, actions)
+			embedding_loss, a_loss, sT_loss, total_loss, prior_loss  = model.get_losses(states, actions)
 
 			# log losses
 			losses.append(total_loss.item())
 			s_T_losses.append(sT_loss.item())
 			a_losses.append(a_loss.item())
 			embedding_losses.append(embedding_loss.item())
+			prior_losses.append(prior_loss.item())
 
-	return np.mean(losses), np.mean(s_T_losses), np.mean(a_losses), np.mean(embedding_losses)
+	return np.mean(losses), np.mean(s_T_losses), np.mean(a_losses), np.mean(embedding_losses), np.mean(prior_losses)
 
 
 batch_size = 100
 
 h_dim = 256
-z_dim = 256
-num_embeddings = 128
+z_dim = 64
+num_embeddings = 64
 lr = 5e-5
 wd = 0.0
 beta = 1.0
@@ -72,8 +74,8 @@ load_from_checkpoint = False
 per_element_sigma = False
 
 # env_name = 'antmaze-large-diverse-v0'
-#env_name = 'kitchen-mixed-v0'
-env_name = 'maze2d-large-v1'
+env_name = 'kitchen-mixed-v0'
+#env_name = 'maze2d-large-v1'
 
 states = np.load('data/'+env_name+'/observations.npy')
 next_states = np.load('data/'+env_name+'/next_observations.npy')
@@ -103,7 +105,7 @@ model = SkillModelVectorQuantized(state_dim, a_dim, z_dim, h_dim, num_embeddings
 
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
 
-filename = 'VQ_model_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_init_state_dep_'+str(init_state_dependent)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
+filename = 'VQ_model_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_init_state_dep_'+str(init_state_dependent)+'_zdim_'+str(z_dim)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
 
 if load_from_checkpoint:
 	PATH = os.path.join(config.ckpt_dir,filename+'_best_sT.pth')
@@ -149,7 +151,7 @@ min_test_s_T_loss = 10**10
 min_test_a_loss = 10**10
 for i in range(n_epochs):
 
-	test_loss, test_s_T_loss, test_a_loss, test_embedding_loss = test(model)
+	test_loss, test_s_T_loss, test_a_loss, test_embedding_loss, test_prior_loss = test(model)
 	
 	print("--------TEST---------")
 	
@@ -157,13 +159,15 @@ for i in range(n_epochs):
 	print('test_s_T_loss: ', test_s_T_loss)
 	print('test_a_loss: ', test_a_loss)
 	print('test_embedding_loss: ', test_embedding_loss)
+	print('test_prior_loss: ', test_prior_loss)
 
 	print(i)
 	experiment.log_metric("test_loss", test_loss, step=i)
 	experiment.log_metric("test_s_T_loss", test_s_T_loss, step=i)
 	experiment.log_metric("test_a_loss", test_a_loss, step=i)
 	experiment.log_metric("test_embedding_loss", test_embedding_loss, step=i)
-	
+	experiment.log_metric("test_prior_loss", test_prior_loss, step=i)
+	'''
 	if test_loss < min_test_loss:
 		min_test_loss = test_loss
 		checkpoint_path = os.path.join(config.ckpt_dir,filename+'_best.pth')
@@ -184,7 +188,7 @@ for i in range(n_epochs):
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
-
+	'''
 
 	loss = train(model,optimizer)
 	

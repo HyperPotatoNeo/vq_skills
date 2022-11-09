@@ -354,22 +354,18 @@ class Prior(nn.Module):
     -embed z
     -Pass into fully connected network to get "state T features"
     '''
-    def __init__(self,state_dim,z_dim,h_dim,goal_conditioned=False,goal_dim=2):
+    def __init__(self,state_dim,num_embeddings,h_dim):
 
         super(Prior,self).__init__()
         
         self.state_dim = state_dim
-        self.z_dim = z_dim
-        self.goal_conditioned = goal_conditioned
-        if(self.goal_conditioned):
-            self.goal_dim = goal_dim
-        else:
-            self.goal_dim = 0
-        self.layers = nn.Sequential(nn.Linear(state_dim+self.goal_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,h_dim),nn.ReLU())
+        self.num_embeddings = num_embeddings
+        self.layers = nn.Sequential(nn.Linear(state_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,h_dim),nn.ReLU())
         #self.mean_layer = nn.Linear(h_dim,z_dim)
-        self.mean_layer = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,z_dim),nn.Softmax())
+        self.categorical_layer = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,num_embeddings))
+        self.softmax = nn.Softmax(dim=1)
         
-    def forward(self,s0,goal=None):
+    def forward(self,s0):
 
         '''
         INPUTS: 
@@ -380,14 +376,13 @@ class Prior(nn.Module):
             z_sig:  batch_size x 1 x state_dim tensor of z standard devs
             
         '''
-        if(self.goal_conditioned):
-            s0 = torch.cat([s0,goal],dim=-1)
         feats = self.layers(s0)
         # get mean and stand dev of action distribution
-        z_mean = self.mean_layer(feats)
-        z_sig  = self.sig_layer(feats)
+        z_prior = self.categorical_layer(feats)
+        z_normalized = self.softmax(z_prior)
+        #z_sig  = self.sig_layer(feats)
 
-        return z_mean, z_sig
+        return z_prior,z_normalized
 
 
 class VectorQuantizer(nn.Module):
@@ -439,9 +434,11 @@ class SkillModelVectorQuantized(nn.Module):
         self.decoder = Decoder(state_dim,a_dim,z_dim,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
         #self.prior   = Prior(state_dim,z_dim,h_dim)
         self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta)
+        self.prior = Prior(state_dim,num_embeddings,h_dim)
         self.beta    = beta
         self.alpha   = alpha
         self.ent_pen = ent_pen
+        self.cross_entropy_loss = torch.nn.CrossEntropyLoss()
 
         if ent_pen != 0:
             assert not state_dec_stop_grad
@@ -481,6 +478,10 @@ class SkillModelVectorQuantized(nn.Module):
         z_post_means = self.encoder(states,actions)
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
+        
+        z_prior,z_normalized = self.prior(states[:,0])
+
+        prior_loss = self.cross_entropy_loss(z_prior,torch.squeeze(min_encoding_indices.detach(),dim=1))
 
         sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
 
@@ -491,7 +492,7 @@ class SkillModelVectorQuantized(nn.Module):
         sT_loss = -torch.sum(sT_dist.log_prob(sT)) / denom
         a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
 
-        return self.alpha*sT_loss + a_loss + embedding_loss
+        return self.alpha*sT_loss + a_loss + embedding_loss + prior_loss
 
     
     def get_losses(self,states,actions):
@@ -510,6 +511,10 @@ class SkillModelVectorQuantized(nn.Module):
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
 
+        z_prior,z_normalized = self.prior(states[:,0])
+
+        prior_loss = self.cross_entropy_loss(z_prior,torch.squeeze(min_encoding_indices.detach(),dim=1))
+
         sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
 
         sT_dist  = Normal.Normal(sT_mean,sT_sig)
@@ -520,7 +525,7 @@ class SkillModelVectorQuantized(nn.Module):
         a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
         total_loss = self.alpha*sT_loss + a_loss + embedding_loss
 
-        return embedding_loss, a_loss, sT_loss, total_loss
+        return embedding_loss, a_loss, sT_loss, total_loss, prior_loss
             
 
     def get_expected_cost_vq(self, s0, skill_idx, goal_state):
