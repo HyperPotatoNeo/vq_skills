@@ -11,6 +11,10 @@ from utils import chunks
 import config
 import os
 
+def weight_reset(m):
+    if isinstance(m, nn.Linear):
+        m.reset_parameters()
+
 def train(model,optimizer):
 	losses = []
 	for batch_id, data in enumerate(train_loader):
@@ -54,14 +58,14 @@ def test(model):
 
 batch_size = 100
 
-h_dim = 256
-z_dim = 64
-num_embeddings = 64
-lr = 5e-5
+h_dim = 512
+z_dim = 4
+num_embeddings = 8
+lr = 5e-4
 wd = 0.0
 beta = 1.0
 alpha = 1.0
-H = 20
+H = 30
 stride = 1
 n_epochs = 50000
 test_split = .2
@@ -71,10 +75,10 @@ encoder_type = 'state_action_sequence'
 state_decoder_type = 'mlp'
 init_state_dependent = True
 load_from_checkpoint = False
-per_element_sigma = False
+per_element_sigma = True
 
-# env_name = 'antmaze-large-diverse-v0'
-env_name = 'kitchen-mixed-v0'
+env_name = 'antmaze-large-diverse-v0'
+#env_name = 'kitchen-mixed-v0'
 #env_name = 'maze2d-large-v1'
 
 states = np.load('data/'+env_name+'/observations.npy')
@@ -97,7 +101,7 @@ print('MAKIN TEST SET!!!')
 obs_chunks_test,  action_chunks_test  = chunks(states_test,  next_states_test,  actions_test,  H, stride)
 
 experiment = Experiment(api_key = 'LVi0h2WLrDaeIC6ZVITGAvzyl', project_name = 'vq_skills')
-experiment.add_tag('testing')
+experiment.add_tag('z4n16 prior_ST')
 
 # First, instantiate a skill model
 
@@ -107,8 +111,10 @@ model = SkillModelVectorQuantized(state_dim, a_dim, z_dim, h_dim, num_embeddings
 PATH = os.path.join(config.ckpt_dir,filename)
 checkpoint = torch.load(PATH)
 model.load_state_dict(checkpoint['model_state_dict'])
+model.prior.apply(weight_reset)
+model.decoder.abstract_dynamics.apply(weight_reset)
 
-optimizer = torch.optim.Adam([model.prior.parameters(),model.decoder.abstract_dynamics.parameters()], lr=lr, weight_decay=wd)
+optimizer = torch.optim.Adam(list(model.prior.parameters())+list(model.decoder.abstract_dynamics.parameters()), lr=lr, weight_decay=wd)
 
 experiment.log_parameters({'lr':lr,
 							'h_dim':h_dim,
