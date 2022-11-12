@@ -101,17 +101,14 @@ experiment.add_tag('testing')
 
 # First, instantiate a skill model
 
+filename = 'VQ_model_antmaze-large-diverse-v0_num_embeddings_8_init_state_dep_True_zdim_4_H_30_l2reg_0.0_a_1.0_b_1.0_per_el_sig_True_log_best.pth'
+
 model = SkillModelVectorQuantized(state_dim, a_dim, z_dim, h_dim, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma).cuda()
+PATH = os.path.join(config.ckpt_dir,filename)
+checkpoint = torch.load(PATH)
+model.load_state_dict(checkpoint['model_state_dict'])
 
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-
-filename = 'VQ_model_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_init_state_dep_'+str(init_state_dependent)+'_zdim_'+str(z_dim)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
-
-if load_from_checkpoint:
-	PATH = os.path.join(config.ckpt_dir,filename+'_best_sT.pth')
-	checkpoint = torch.load(PATH)
-	model.load_state_dict(checkpoint['model_state_dict'])
-	optimizer.load_state_dict(checkpoint['optimizer'])
+optimizer = torch.optim.Adam([model.prior.parameters(),model.decoder.abstract_dynamics.parameters()], lr=lr, weight_decay=wd)
 
 experiment.log_parameters({'lr':lr,
 							'h_dim':h_dim,
@@ -148,43 +145,38 @@ test_loader = DataLoader(
 
 min_test_loss = 10**10
 min_test_s_T_loss = 10**10
-min_test_a_loss = 10**10
+min_test_prior_loss = 10**10
 for i in range(n_epochs):
 
 	test_loss, test_s_T_loss, test_a_loss, test_embedding_loss, test_prior_loss = test(model)
-	
+	test_loss = test_s_T_loss+test_prior_loss
+
 	print("--------TEST---------")
 	
-	print('test_loss: ', test_loss)
 	print('test_s_T_loss: ', test_s_T_loss)
-	print('test_a_loss: ', test_a_loss)
-	print('test_embedding_loss: ', test_embedding_loss)
 	print('test_prior_loss: ', test_prior_loss)
 
 	print(i)
-	experiment.log_metric("test_loss", test_loss, step=i)
 	experiment.log_metric("test_s_T_loss", test_s_T_loss, step=i)
-	experiment.log_metric("test_a_loss", test_a_loss, step=i)
-	experiment.log_metric("test_embedding_loss", test_embedding_loss, step=i)
 	experiment.log_metric("test_prior_loss", test_prior_loss, step=i)
 	
 	if test_loss < min_test_loss:
 		min_test_loss = test_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,filename+'_best.pth')
+		checkpoint_path = os.path.join(config.ckpt_dir,'best_total_'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
 
 	if test_s_T_loss < min_test_s_T_loss:
 		min_test_s_T_loss = test_s_T_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,filename+'_best_sT.pth')
+		checkpoint_path = os.path.join(config.ckpt_dir,'best_s_T_'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
 
-	if test_a_loss < min_test_a_loss:
-		min_test_a_loss = test_a_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,filename+'_best_a.pth')
+	if test_prior_loss < min_test_prior_loss:
+		min_test_prior_loss = test_prior_loss
+		checkpoint_path = os.path.join(config.ckpt_dir,'best_prior'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
@@ -197,13 +189,3 @@ for i in range(n_epochs):
 	print('loss', loss)
 	print(i)
 	experiment.log_metric("train_loss", loss, step=i)
-
-	if i % 10 == 0:
-		
-		checkpoint_path = os.path.join(config.ckpt_dir,filename+'.pth')
-		# checkpoint_path = 'checkpoints/'+ filename + '.pth'
-		torch.save({
-							'model_state_dict': model.state_dict(),
-							'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
-
-	
