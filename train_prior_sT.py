@@ -162,21 +162,21 @@ for i in range(n_epochs):
 	
 	if test_loss < min_test_loss:
 		min_test_loss = test_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,'best_total_'+filename)
+		checkpoint_path = os.path.join(config.final_ckpt_dir,'best_total_'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
 
 	if test_s_T_loss < min_test_s_T_loss:
 		min_test_s_T_loss = test_s_T_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,'best_s_T_'+filename)
+		checkpoint_path = os.path.join(config.final_ckpt_dir,'best_s_T_'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
 
 	if test_prior_loss < min_test_prior_loss:
 		min_test_prior_loss = test_prior_loss
-		checkpoint_path = os.path.join(config.ckpt_dir,'best_prior'+filename)
+		checkpoint_path = os.path.join(config.final_ckpt_dir,'best_prior'+filename)
 		# checkpoint_path = 'checkpoints/'+ filename + '_best.pth'
 		torch.save({'model_state_dict': model.state_dict(),
 				'optimizer_state_dict': optimizer.state_dict()}, checkpoint_path)
