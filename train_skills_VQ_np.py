@@ -74,12 +74,17 @@ load_from_checkpoint = False
 per_element_sigma = False
 
 # env_name = 'antmaze-large-diverse-v0'
-env_name = 'kitchen-mixed-v0'
+#env_name = 'kitchen-mixed-v0'
 #env_name = 'maze2d-large-v1'
+env_name = 'carla-nocrash'
 
 states = np.load('data/'+env_name+'/observations.npy')
 next_states = np.load('data/'+env_name+'/next_observations.npy')
 actions = np.load('data/'+env_name+'/actions.npy')
+if env_name=='carla-nocrash':
+	terminals = np.load('data/'+env_name+'/terminals.npy')
+terminals_train = None
+terminals_test = None
 N = states.shape[0]
 state_dim = states.shape[1]
 a_dim = actions.shape[1]
@@ -88,16 +93,20 @@ N_test = N - N_train
 states_train  = states[:N_train,:]
 next_states_train = next_states[:N_train,:]
 actions_train = actions[:N_train,:]
+if env_name=='carla-nocrash':
+	terminals_train =  terminals[:N_train,:]
 states_test  = states[N_train:,:]
 next_states_test = next_states[N_train:,:]
 actions_test = actions[N_train:,:]
-obs_chunks_train, action_chunks_train = chunks(states_train, next_states_train, actions_train, H, stride)
+if env_name=='carla-nocrash':
+	terminals_test =  terminals[N_train:,:]
+obs_chunks_train, action_chunks_train = chunks(states_train, next_states_train, actions_train, H, stride, terminals_train)
 print('states_test.shape: ',states_test.shape)
 print('MAKIN TEST SET!!!')
-obs_chunks_test,  action_chunks_test  = chunks(states_test,  next_states_test,  actions_test,  H, stride)
+obs_chunks_test,  action_chunks_test  = chunks(states_test,  next_states_test,  actions_test,  H, stride, terminals_test)
 
 experiment = Experiment(api_key = 'LVi0h2WLrDaeIC6ZVITGAvzyl', project_name = 'vq_skills')
-experiment.add_tag('testing')
+experiment.add_tag('nocrash')
 
 # First, instantiate a skill model
 

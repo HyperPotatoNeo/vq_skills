@@ -14,7 +14,7 @@ def reparameterize(mean, std):
 
 
 
-def chunks(obs,next_obs,actions,H,stride):
+def chunks(obs,next_obs,actions,H,stride,terminals):
 	'''
 	obs is a N x 4 array
 	goals is a N x 2 array
@@ -37,6 +37,13 @@ def chunks(obs,next_obs,actions,H,stride):
 
 		action_chunk = torch.tensor(actions[start_ind:end_ind,:],dtype=torch.float32)
 		
+		if terminals is not None:
+			terminals_chunk = terminals[start_ind:end_ind-1]
+			if np.all(terminals_chunk==False):
+				obs_chunks.append(obs_chunk)
+				action_chunks.append(action_chunk)
+			continue
+
 		loc_deltas = obs_chunk[1:,:] - obs_chunk[:-1,:] #Franka or Maze2d
 		
 		norms = np.linalg.norm(loc_deltas,axis=-1)
