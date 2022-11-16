@@ -363,7 +363,7 @@ class Prior(nn.Module):
         self.layers = nn.Sequential(nn.Linear(state_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,h_dim),nn.ReLU())
         #self.mean_layer = nn.Linear(h_dim,z_dim)
         self.categorical_layer = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,num_embeddings))
-        self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.Softmax(dim=2)
         
     def forward(self,s0):
 
@@ -383,6 +383,44 @@ class Prior(nn.Module):
         #z_sig  = self.sig_layer(feats)
 
         return z_prior,z_normalized
+
+class AbstractReward(nn.Module):
+
+    def __init__(self,state_dim,z_dim,h_dim):
+
+        super(AbstractReward,self).__init__()
+        
+        self.layers = nn.Sequential(nn.Linear(state_dim+z_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,h_dim),nn.ReLU())
+        #self.mean_layer = nn.Linear(h_dim,state_dim)
+        self.mean_layer = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,1))
+        #self.sig_layer  = nn.Sequential(nn.Linear(h_dim,state_dim),nn.Softplus())
+
+        self.state_dim = state_dim
+        self.loss = torch.nn.MSELoss()
+
+    def forward(self,s0,z):
+
+        '''
+        INPUTS:
+            s0: batch_size x 1 x state_dim initial state (first state in execution of skill)
+            z:  batch_size x 1 x z_dim "skill"/z
+        OUTPUTS: 
+            rT_mean: batch_size x 1 tensor of terminal (time=T) reward means
+        '''
+
+        # concatenate s0 and z
+        s0_z = torch.cat([s0,z],dim=-1)
+        # pass s0_z through layers
+        feats = self.layers(s0_z)
+        # get mean and stand dev of action distribution
+        rT_mean = self.mean_layer(feats)
+
+        return rT_mean
+
+    def get_loss(self,s0,z_q,rT_true):
+        rT_mean = self.forward(s0,z_q)
+        l = self.loss(rT_mean[:,0,:],rT_true[:,0,:])
+        return l
 
 
 class VectorQuantizer(nn.Module):
@@ -434,6 +472,7 @@ class SkillModelVectorQuantized(nn.Module):
         self.decoder = Decoder(state_dim,a_dim,z_dim,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
         #self.prior   = Prior(state_dim,z_dim,h_dim)
         self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta)
+        self.reward_model = AbstractReward(state_dim,z_dim,h_dim)
         self.prior = Prior(state_dim,num_embeddings,h_dim)
         self.beta    = beta
         self.alpha   = alpha
@@ -528,7 +567,7 @@ class SkillModelVectorQuantized(nn.Module):
         return embedding_loss, a_loss, sT_loss, total_loss, prior_loss
             
 
-    def get_expected_cost_vq(self, s0, skill_idx, goal_state):
+    def get_expected_cost_vq(self, s0, skill_idx, goal_state=None, use_reward_model=False):
         '''
         s0 is initial state, batch_size x 1 x s_dim
         skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
@@ -536,17 +575,22 @@ class SkillModelVectorQuantized(nn.Module):
         # tile s0 along batch dimension
         #s0_tiled = s0.tile([1,batch_size,1])
         batch_size = skill_idx.shape[0]
-        goal_state = torch.cat(batch_size * [goal_state],dim=0)
         s_i = s0[:batch_size]
         
         skill_seq_len = skill_idx.shape[1]
         skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
-        costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+        if not use_reward_model:
+            costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+            goal_state = torch.cat(batch_size * [goal_state],dim=0)
 
         for i in range(skill_seq_len):
             skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[skill_idx[:,i]]
             z_i = skill_seq[:,i:i+1,:]
             
+            if(use_reward_model):
+                costs = -self.reward_model(s_i,z_i)[:,0,0]
+                continue
+
             s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
 
             s_sampled = s_mean
@@ -557,10 +601,54 @@ class SkillModelVectorQuantized(nn.Module):
             
             #pred_states.append(s_i)
         
-        costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
-        costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
+        if not use_reward_model:
+            costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
+            costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
 
         return costs
+
+    def get_expected_cost_vq_prior(self, s0, batch_size, goal_state=None, skill_seq_len=1, use_reward_model=False):
+        '''
+        s0 is initial state, batch_size x 1 x s_dim
+        skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
+        '''
+        # tile s0 along batch dimension
+        #s0_tiled = s0.tile([1,batch_size,1])
+        s_i = s0[:batch_size]
+
+        skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
+        if not use_reward_model:
+            costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+            goal_state = torch.cat(batch_size * [goal_state],dim=0)
+
+        idx_list = np.zeros((batch_size,skill_seq_len))
+        for i in range(skill_seq_len):
+            _,idx_dist = self.prior(s_i)
+            cat_dist = Categorical.Categorical(torch.squeeze(idx_dist,dim=1))
+            idx_sample = cat_dist.sample().cpu().numpy()
+            idx_list[:,i] = idx_sample
+
+            skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[idx_sample]
+            z_i = skill_seq[:,i:i+1,:]
+
+            if(use_reward_model):
+                costs = -self.reward_model(s_i,z_i)[:,0,0]
+                continue
+            
+            s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
+
+            s_sampled = s_mean
+            s_i = s_sampled
+
+            cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
+            costs.append(cost_i)
+            
+            #pred_states.append(s_i)
+        if not use_reward_model:
+            costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
+            costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
+
+        return idx_list, costs
 
     
     def reparameterize(self, mean, std):
