@@ -24,10 +24,10 @@ fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 device = torch.device('cuda:0')
 config = DefaultMainConfig()
 config.populate_config(
-    observation_config = "VehicleDynamicsObstacleNoCameraConfig",
+    observation_config = "VehicleDynamicsObstacleConfig",
     action_config = "MergedSpeedScaledTanhConfig",
     reward_config = "Simple2RewardConfig",
-    scenario_config = "NoCrashDenseTown01Config",
+    scenario_config = "NoCrashDenseTown02Config",
     testing = False,
     carla_gpu = 0,
     render_server=True
@@ -39,6 +39,8 @@ episodes = 100
 
 dataset = {}
 dataset['observations'] = np.load('data/carla-nocrash/observations.npy')
+print(dataset['observations'].shape)
+exit()
 dataset['next_observations'] = np.load('data/carla-nocrash/observations.npy')
 dataset['actions'] = np.load('data/carla-nocrash/actions.npy')
 dataset['terminals'] = np.load('data/carla-nocrash/terminals.npy')
@@ -48,12 +50,12 @@ actions = dataset['actions']
 terminals = dataset['terminals']
 
 skill_seq_len = 1#6
-H = 5#30#40
+H = 1#40
 state_dim = dataset['observations'].shape[1]
 a_dim = dataset['actions'].shape[1]
 h_dim = 256
 z_dim = 4
-num_embeddings = 8
+num_embeddings = 4
 batch_size = 10
 lr = 1e-4
 wd = 0.0
@@ -72,7 +74,7 @@ state_decoder_type = 'mlp'
 term_state_dependent_prior = False
 init_state_dependent = True
 
-filename = 'best_priorVQ_model_carla-nocrash_num_embeddings_8_init_state_dep_True_zdim_4_H_5_l2reg_0.0_a_1.0_b_1.0_per_el_sig_True_log_best.pth'
+filename = 'VQ_model_carla-nocrash3_num_embeddings_4_init_state_dep_True_zdim_4_H_10_l2reg_0.0_a_1.0_b_1.0_per_el_sig_True_log_best_a.pth'
 
 PATH = 'carla_checkpoints/'+filename
 
@@ -96,6 +98,7 @@ idx_list = []
 for i in iterlist:
     idx_list.append(i)
 idx_list = np.array(idx_list)
+prev_steer = 0.0
 
 def run_skill_seq(skill_seq,env,s0,model,capture_video=False,video_obj=None):
     state = s0
@@ -104,7 +107,7 @@ def run_skill_seq(skill_seq,env,s0,model,capture_video=False,video_obj=None):
     pred_sigs = []
     states = []
     # plt.figure()
-    for i in range(skill_seq.shape[1]):
+    for i in range(1):#skill_seq.shape[1]):
         # get the skill
         # z = skill_seq[:,i:i+1,:]
         z = skill_seq[:,i:i+1,:]
@@ -112,7 +115,10 @@ def run_skill_seq(skill_seq,env,s0,model,capture_video=False,video_obj=None):
         
         # run skill for H timesteps
         for j in range(H):
+            #print(z)
             action = model.decoder.ll_policy.numpy_policy(state,z)
+            if(action[1]<0):
+                action[1] = -1
             state,reward,done,info = env.step(action)
             if(capture_video):
                 img = info["sensor.camera.rgb/top"]
@@ -120,22 +126,24 @@ def run_skill_seq(skill_seq,env,s0,model,capture_video=False,video_obj=None):
                 video_obj.write(img)
             skill_seq_states.append(state)
             if(done):
-                return state, done
+                return state, done, info
         states.append(skill_seq_states)
 
     states = np.stack(states)
 
-    return state,done
+    return state,done,info
         
 
 
 execute_n_skills = 1
 capture_video = False
+successes = 0
 for j in range(1000):
     video=cv2.VideoWriter('videos/town01/'+str(j)+'.mp4',fourcc,10,(512,512))
     print('EPISODE: ',j+1)
     state = env.reset(index = j)
     done = False
+    info = None
     while(not done):
         s_torch = torch.cat(batch_size*[torch.tensor(state,dtype=torch.float32,device=device).reshape((1,1,-1))])
         
@@ -143,9 +151,13 @@ for j in range(1000):
         skill_seq = exhaustive_search(skill_model, cost_fn, idx_list, batch_size)
         #cost_fn = lambda batch_size: skill_model.get_expected_cost_vq_prior(s_torch, batch_size, use_reward_model=True)
         #skill_seq = prior_search(skill_model, cost_fn, batch_size, skill_seq_len, n_iters=1)
-        #skill_seq = max_prior(skill_model, s_torch)
-
+        #skill_seq = max_prior(skill_model, s_torch,x)
+        #x+=5
         skill_seq = skill_seq[:execute_n_skills,:]
         skill_seq = skill_seq.unsqueeze(0)  
-        state,done = run_skill_seq(skill_seq,env,state,skill_model,capture_video,video)
+        state,done,info = run_skill_seq(skill_seq,env,state,skill_model,capture_video,video)
+        print(info['distance_to_goal'])
+    if(info['termination_state']=='success'):
+        successes += 1
+    print('SUCCESS RATE: ',successes,'/',j+1)
     video.release()
