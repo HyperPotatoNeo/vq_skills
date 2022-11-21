@@ -518,7 +518,7 @@ class SkillModelVectorQuantized(nn.Module):
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
         
-        z_prior,z_normalized = self.prior(states[:,0])
+        z_prior,z_normalized = self.prior(states[:,0:1])
 
         prior_loss = self.cross_entropy_loss(z_prior,torch.squeeze(min_encoding_indices.detach(),dim=1))
 
@@ -579,6 +579,7 @@ class SkillModelVectorQuantized(nn.Module):
         
         skill_seq_len = skill_idx.shape[1]
         skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
+        costs = torch.zeros(batch_size).cuda()
         if not use_reward_model:
             costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
             goal_state = torch.cat(batch_size * [goal_state],dim=0)
@@ -586,11 +587,57 @@ class SkillModelVectorQuantized(nn.Module):
         for i in range(skill_seq_len):
             skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[skill_idx[:,i]]
             z_i = skill_seq[:,i:i+1,:]
+
+            s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
+            if(use_reward_model):
+                #costs += -self.reward_model(s_i,z_i)[:,0,0]
+                obstacle_dists = s_mean[:,0,4]
+                #print('SPEEDS:',s_i[:,0,1])
+                costs += -(s_mean[:,0,1])**2 + 1/(obstacle_dists)
+
+            s_sampled = s_mean
+            s_i = s_sampled
+
+            if not use_reward_model:
+                cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
+                costs.append(cost_i)
             
+            #pred_states.append(s_i)
+        
+        if not use_reward_model:
+            costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
+            costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
+
+        return costs
+
+    def get_expected_cost_vq_prior(self, s0, batch_size, goal_state=None, skill_seq_len=1, use_reward_model=False):
+        '''
+        s0 is initial state, batch_size x 1 x s_dim
+        skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
+        '''
+        # tile s0 along batch dimension
+        #s0_tiled = s0.tile([1,batch_size,1])
+        s_i = s0[:batch_size]
+
+        skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
+        if not use_reward_model:
+            costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+            goal_state = torch.cat(batch_size * [goal_state],dim=0)
+
+        idx_list = np.zeros((batch_size,skill_seq_len))
+        for i in range(skill_seq_len):
+            _,idx_dist = self.prior(s_i)
+            cat_dist = Categorical.Categorical(torch.squeeze(idx_dist,dim=1))
+            idx_sample = cat_dist.sample().cpu().numpy()
+            idx_list[:,i] = idx_sample
+
+            skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[idx_sample]
+            z_i = skill_seq[:,i:i+1,:]
+
             if(use_reward_model):
                 costs = -self.reward_model(s_i,z_i)[:,0,0]
                 continue
-
+            
             s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
 
             s_sampled = s_mean
@@ -598,6 +645,184 @@ class SkillModelVectorQuantized(nn.Module):
 
             cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
             costs.append(cost_i)
+            
+            #pred_states.append(s_i)
+        if not use_reward_model:
+            costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
+            costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
+
+        return idx_list, costs
+
+    
+    def reparameterize(self, mean, std):
+        eps = torch.normal(torch.zeros(mean.size()).cuda(), torch.ones(mean.size()).cuda())
+        return mean + std*eps
+
+
+class SkillModelDiscrete(nn.Module):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True):
+        super(SkillModelDiscrete, self).__init__()
+
+        print('a_dist: ', a_dist)
+        self.state_dim = state_dim # state dimension
+        self.a_dim = a_dim # action dimension
+        self.encoder_type = encoder_type
+        self.state_dec_stop_grad = state_dec_stop_grad
+        self.z_dim = z_dim
+        
+        if encoder_type == 'state_action_sequence':
+            self.encoder = Encoder(state_dim,a_dim,z_dim,h_dim)
+        elif encoder_type == 's0sT':
+            self.encoder = S0STEncoder(state_dim,a_dim,z_dim,h_dim)
+        elif encoder_type == 'state_sequence':
+            self.encoder = StateSeqEncoder(state_dim,a_dim,z_dim,h_dim)
+        else:
+            print('INVALID ENCODER TYPE!!!!')
+            assert False
+
+        self.decoder = Decoder(state_dim,a_dim,z_dim,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
+        #self.prior   = Prior(state_dim,z_dim,h_dim)
+        self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta)
+        self.reward_model = AbstractReward(state_dim,z_dim,h_dim)
+        self.prior = Prior(state_dim,num_embeddings,h_dim)
+        self.beta    = beta
+        self.alpha   = alpha
+        self.ent_pen = ent_pen
+        self.cross_entropy_loss = torch.nn.CrossEntropyLoss()
+        self.softmax = nn.Softmax(dim=2)
+
+        if ent_pen != 0:
+            assert not state_dec_stop_grad
+
+    def forward(self,states,actions):
+        
+        '''
+        Takes states and actions, returns the distributions necessary for computing the objective function
+        INPUTS:
+            states: batch_size x T x state_dim state sequence tensor
+            actions: batch_size x T x a_dim action sequence tensor
+        OUTPUTS:
+            s_T_mean:     batch_size x 1 x state_dim tensor of means of "decoder" distribution over terminal states
+            S_T_sig:      batch_size x 1 x state_dim tensor of standard devs of "decoder" distribution over terminal states
+            a_means:      batch_size x T x a_dim tensor of means of "decoder" distribution over actions
+            a_sigs:       batch_size x T x a_dim tensor of stand devs
+            z_post_means: batch_size x 1 x z_dim tensor of means of z posterior distribution
+            z_post_sigs:  batch_size x 1 x z_dim tensor of stand devs of z posterior distribution 
+        '''
+
+        # STEP 1. Encode states and actions to get posterior over z
+        z_post_means,z_post_sigs = self.encoder(states,actions)
+        # STEP 2. sample z from posterior 
+        z_sampled = self.reparameterize(z_post_means,z_post_sigs)
+
+        # STEP 3. Pass z_sampled and states through decoder 
+        s_T_mean, s_T_sig, a_means, a_sigs = self.decoder(states,actions,z_sampled) # 5/4/22 add actions as argument here for autoregressive policy
+
+        return s_T_mean, s_T_sig, a_means, a_sigs, z_post_means, z_post_sigs
+
+
+    def get_loss(self,states,actions):
+
+        batch_size,T,_ = states.shape
+        denom = T*batch_size
+        
+        z_post_means = self.encoder(states,actions)
+        z_post_dist = self.softmax(z_post_means)
+
+        z_cat = Categorical.Categorical(torch.squeeze(z_post_dist,dim=1))
+        z_sample = torch.unsqueeze(z_cat.sample(),dim=1)
+        z_sample_onehot = torch.nn.functional.one_hot(z_sample,num_classes=self.z_dim)
+        z_q = z_post_dist + (z_sample_onehot - z_post_dist).detach()
+        
+        z_prior,z_normalized = self.prior(states[:,0:1])
+
+        prior_loss = self.cross_entropy_loss(z_prior[:,0,:],torch.squeeze(z_sample.detach(),dim=1))
+
+        sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
+
+        sT_dist  = Normal.Normal(sT_mean,sT_sig)
+        a_dist    = Normal.Normal(a_means,a_sigs)
+
+        sT = states[:,-1:,:]
+        sT_loss = -torch.sum(sT_dist.log_prob(sT)) / denom
+        a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
+
+        embedding_loss = torch.tensor(0.0)
+
+        return self.alpha*sT_loss + a_loss + embedding_loss + prior_loss
+
+    
+    def get_losses(self,states,actions):
+        '''
+        Computes various components of the loss:
+        L = E_q [log P(s_T|s_0,z)] 
+          + E_q [sum_t=0^T P(a_t|s_t,z)] 
+          - D_kl(q(z|s_0,...,s_T,a_0,...,a_T)||P(z_0|s_0))
+        Distributions we need:
+        '''
+
+        batch_size,T,_ = states.shape
+        denom = T*batch_size
+        
+        z_post_means = self.encoder(states,actions)
+        z_post_dist = self.softmax(z_post_means)
+
+        z_cat = Categorical.Categorical(torch.squeeze(z_post_dist,dim=1))
+        z_sample = torch.unsqueeze(z_cat.sample(),dim=1)
+        z_sample_onehot = torch.nn.functional.one_hot(z_sample,num_classes=self.z_dim)
+        z_q = z_post_dist + (z_sample_onehot - z_post_dist).detach()
+        
+        z_prior,z_normalized = self.prior(states[:,0:1])
+        prior_loss = self.cross_entropy_loss(z_prior[:,0,:],torch.squeeze(z_sample.detach(),dim=1))
+
+        sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
+
+        sT_dist  = Normal.Normal(sT_mean,sT_sig)
+        a_dist    = Normal.Normal(a_means,a_sigs)
+
+        sT = states[:,-1:,:]
+        sT_loss = -torch.sum(sT_dist.log_prob(sT)) / denom
+        a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
+        embedding_loss = torch.tensor(0.0)
+        total_loss = self.alpha*sT_loss + a_loss + embedding_loss
+
+        return embedding_loss, a_loss, sT_loss, total_loss, prior_loss
+            
+
+    def get_expected_cost_vq(self, s0, skill_idx, goal_state=None, use_reward_model=False):
+        '''
+        s0 is initial state, batch_size x 1 x s_dim
+        skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
+        '''
+        # tile s0 along batch dimension
+        #s0_tiled = s0.tile([1,batch_size,1])
+        batch_size = skill_idx.shape[0]
+        s_i = s0[:batch_size]
+        
+        skill_seq_len = skill_idx.shape[1]
+        skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
+        costs = torch.zeros(batch_size).cuda()
+        if not use_reward_model:
+            costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+            goal_state = torch.cat(batch_size * [goal_state],dim=0)
+
+        for i in range(skill_seq_len):
+            skill_seq[:,i,:] = torch.nn.functional.one_hot(skill_idx[:,i],num_classes=self.z_dim)
+            z_i = skill_seq[:,i:i+1,:]
+
+            s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
+            if(use_reward_model):
+                #costs += -self.reward_model(s_i,z_i)[:,0,0]
+                obstacle_dists = s_mean[:,0,4]
+                #print('SPEEDS:',s_i[:,0,1])
+                costs += -(s_mean[:,0,1])**2 + 1/(obstacle_dists)
+
+            s_sampled = s_mean
+            s_i = s_sampled
+
+            if not use_reward_model:
+                cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
+                costs.append(cost_i)
             
             #pred_states.append(s_i)
         
