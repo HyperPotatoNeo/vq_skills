@@ -44,11 +44,11 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 				action_chunks.append(action_chunk)
 			continue
 
-		loc_deltas = obs_chunk[1:,:] - obs_chunk[:-1,:] #Franka or Maze2d
+		loc_deltas = obs_chunk[1:,:2] - obs_chunk[:-1,:2] #Franka or Maze2d
 		
 		norms = np.linalg.norm(loc_deltas,axis=-1)
 		#USE VALUE FOR THRESHOLD CONDITION BASED ON ENVIRONMENT
-		if np.all(norms <= 0.7): #Antmaze large 0.8 medium 0.67 / Franka partial 0.22 / Maze2d 0.6
+		if np.all(norms <= 0.8): #Antmaze large 0.8 medium 0.67 / Franka partial 0.22 / Maze2d 0.6
 			obs_chunks.append(obs_chunk)
 			action_chunks.append(action_chunk)
 		else:
@@ -60,3 +60,35 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 			
 	
 	return torch.stack(obs_chunks),torch.stack(action_chunks)
+
+def reward_chunks(obs,rewards,z_q,H,stride):
+	'''
+	obs is a N x 4 array
+	goals is a N x 2 array
+	H is length of chunck
+	stride is how far we move between chunks.  So if stride=H, chunks are non-overlapping.  If stride < H, they overlap
+	'''
+	
+	obs_chunks = []
+	reward_chunks = []
+	z_q_chunks = []
+	N = obs.shape[0]
+	for i in range(N//stride - H):
+		start_ind = i*stride
+		end_ind = start_ind + H
+		# If end_ind = 4000000, it goes out of bounds
+		# this way start_ind is from 0-3999980 and end_ind is from 20-3999999
+		# if end_ind == N:
+		# 	end_ind = N-1
+		
+		obs_chunk = torch.tensor(obs[start_ind:start_ind+1,:],dtype=torch.float32)
+		reward_chunk = torch.tensor(rewards[start_ind:start_ind+1,:])
+		z_q_chunk = torch.tensor(z_q[start_ind:start_ind+1,:],dtype=torch.float32)
+
+		#USE VALUE FOR THRESHOLD CONDITION BASED ON ENVIRONMENT
+		obs_chunks.append(obs_chunk)
+		reward_chunks.append(reward_chunk)
+		z_q_chunks.append(z_q_chunk)
+
+	print('len(obs_chunks): ',len(obs_chunks))
+	return torch.stack(obs_chunks).float(),torch.stack(z_q_chunks).float(),torch.stack(reward_chunks).float()
