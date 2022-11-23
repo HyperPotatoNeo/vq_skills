@@ -446,18 +446,21 @@ class VQPrior(nn.Module):
     -embed z
     -Pass into fully connected network to get "state T features"
     '''
-    def __init__(self,state_dim,z_dim,n_z,h_dim,distribution_loss=False):
+    def __init__(self,state_dim,z_dim,n_z,h_dim,distribution_loss=False,goal_conditioned=False):
 
         super(VQPrior,self).__init__()
         
+        if(goal_conditioned):
+            state_dim = state_dim + 2
         self.state_dim = state_dim
         self.distribution_loss = distribution_loss
+        self.goal_conditioned = goal_conditioned
         self.layers = nn.Sequential(nn.Linear(state_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,h_dim),nn.ReLU())
         self.mean_layer = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,z_dim*n_z))
         if(distribution_loss):
             self.sig_layer  = nn.Sequential(nn.Linear(h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,z_dim*n_z),nn.Softplus())
         
-    def forward(self,s0):
+    def forward(self,s0,goals=None):
 
         '''
         INPUTS: 
@@ -468,6 +471,8 @@ class VQPrior(nn.Module):
             z_sig:  batch_size x 1 x state_dim tensor of z standard devs
             
         '''
+        if(self.goal_conditioned):
+            s0 = torch.cat([s0,goals],dim=-1)
         feats = self.layers(s0)
         # get mean and stand dev of action distribution
         z_mean = self.mean_layer(feats)
@@ -782,7 +787,7 @@ class M_params(nn.Module):
         pass
 
 class SkillModelVectorQuantizedPriorDist(nn.Module):
-    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True,goal_conditioned=False):
         super(SkillModelVectorQuantizedPriorDist, self).__init__()
 
         print('a_dist: ', a_dist)
@@ -792,13 +797,14 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
         self.state_dec_stop_grad = state_dec_stop_grad
         self.n_z = n_z
         self.distribution_loss = True
+        self.goal_conditioned = goal_conditioned
         
         self.encoder = VQEncoder(state_dim,a_dim,z_dim,h_dim,n_z,distribution_loss=self.distribution_loss)
 
         self.decoder = Decoder(state_dim,a_dim,z_dim*n_z,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
         #self.prior   = Prior(state_dim,z_dim,h_dim)
         self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta,n_z,multi_vector=True,distribution_loss=self.distribution_loss)
-        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim,distribution_loss=self.distribution_loss)
+        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim,distribution_loss=self.distribution_loss,goal_conditioned=goal_conditioned)
         self.beta    = beta
         self.alpha   = alpha
         self.ent_pen = ent_pen
@@ -824,7 +830,7 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
         pass
 
 
-    def get_E_loss(self,states,actions):
+    def get_E_loss(self,states,actions,goals=None):
 
         batch_size,T,_ = states.shape
         denom = T*batch_size
@@ -833,7 +839,10 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means,z_post_sigs)
         
-        z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
+        if(self.goal_conditioned):
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
         post_dist = Normal.Normal(z_post_means,z_post_sigs)
         prior_dist = Normal.Normal(z_prior_means,z_prior_sigs)
 
@@ -845,7 +854,7 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
         return a_loss + self.alpha*kl_loss + embedding_loss
 
-    def get_M_loss(self,states,actions):
+    def get_M_loss(self,states,actions,goals=None):
         batch_size,T,_ = states.shape
         denom = T*batch_size
         
@@ -853,7 +862,10 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means,z_post_sigs)
         
-        z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
+        if(self.goal_conditioned):
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
         post_dist = Normal.Normal(z_post_means,z_post_sigs)
         prior_dist = Normal.Normal(z_prior_means,z_prior_sigs)
 
@@ -871,7 +883,7 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
         return sT_loss + a_loss + kl_loss + embedding_loss
 
     
-    def get_losses(self,states,actions):
+    def get_losses(self,states,actions,goals=None):
         '''
         Computes various components of the loss:
         L = E_q [log P(s_T|s_0,z)] 
@@ -887,7 +899,10 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means,z_post_sigs)
 
-        z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
+        if(self.goal_conditioned):
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
         post_dist = Normal.Normal(z_post_means,z_post_sigs)
         prior_dist = Normal.Normal(z_prior_means,z_prior_sigs)
 
@@ -907,46 +922,35 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
         return embedding_loss, a_loss, sT_loss, kl_loss, vae_loss, total_loss
             
 
-    def get_expected_cost_vq(self, s0, skill_idx, goal_state=None, use_reward_model=False):
+    def get_expected_cost_antmaze(self, s0, skill_seq, goal_state=None):
         '''
         s0 is initial state, batch_size x 1 x s_dim
         skill sequence is a batch_size x skill_seq_len x z_dim tensor that representents a skill_seq_len sequence of skills
         '''
-        # tile s0 along batch dimension
-        #s0_tiled = s0.tile([1,batch_size,1])
-        batch_size = skill_idx.shape[0]
-        s_i = s0[:batch_size]
+        batch_size = s0.shape[0]
+        s_i = s0
         
-        skill_seq_len = skill_idx.shape[1]
-        skill_seq = torch.zeros((batch_size,skill_seq_len,self.vector_quantizer.z_dim)).cuda()
-        costs = torch.zeros(batch_size).cuda()
-        if not use_reward_model:
-            costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
-            goal_state = torch.cat(batch_size * [goal_state],dim=0)
+        skill_seq_len = skill_seq.shape[1]
+
+        costs = [torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()]
+        goal_state = torch.cat(batch_size * [goal_state],dim=0)
 
         for i in range(skill_seq_len):
-            skill_seq[:,i,:] = self.vector_quantizer.embedding.weight[skill_idx[:,i]]
-            z_i = skill_seq[:,i:i+1,:]
+            mu_z, sigma_z = self.prior(s_i)
+
+            z_i = mu_z + sigma_z*skill_seq[:,i:i+1,:]
+            #z_i,_,_ = self.vector_quantizer(z_i)
 
             s_mean, s_sig = self.decoder.abstract_dynamics(s_i,z_i)
-            if(use_reward_model):
-                #costs += -self.reward_model(s_i,z_i)[:,0,0]
-                obstacle_dists = s_mean[:,0,4]
-                #print('SPEEDS:',s_i[:,0,1])
-                costs += -(s_mean[:,0,1])**2 + 1/(obstacle_dists)
 
             s_sampled = s_mean
             s_i = s_sampled
 
-            if not use_reward_model:
-                cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
-                costs.append(cost_i)
-            
-            #pred_states.append(s_i)
+            cost_i = torch.mean((s_i[:,:,:2] - goal_state[:,:,:2])**2,dim=-1).squeeze()
+            costs.append(cost_i)
         
-        if not use_reward_model:
-            costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
-            costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
+        costs = torch.stack(costs,dim=1)  # should be a batch_size x T or batch_size x T 
+        costs,_ = torch.min(costs,dim=1)  # should be of size batch_size
 
         return costs
 

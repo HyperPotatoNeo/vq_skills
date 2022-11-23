@@ -14,7 +14,7 @@ def reparameterize(mean, std):
 
 
 
-def chunks(obs,next_obs,actions,H,stride,terminals):
+def chunks(obs,next_obs,actions,H,stride,terminals,goal_conditioned=False):
 	'''
 	obs is a N x 4 array
 	goals is a N x 2 array
@@ -24,6 +24,7 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 	
 	obs_chunks = []
 	action_chunks = []
+	goal_chunks = []
 	N = obs.shape[0]
 	for i in range(N//stride - H):
 		start_ind = i*stride
@@ -36,6 +37,9 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 		obs_chunk = torch.tensor(obs[start_ind:end_ind,:],dtype=torch.float32)
 
 		action_chunk = torch.tensor(actions[start_ind:end_ind,:],dtype=torch.float32)
+
+		if(goal_conditioned):
+			goal_chunk = torch.tensor(next_obs[start_ind:end_ind,:],dtype=torch.float32)
 		
 		if terminals is not None:
 			terminals_chunk = terminals[start_ind:end_ind-1]
@@ -51,6 +55,8 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 		if np.all(norms <= 0.8): #Antmaze large 0.8 medium 0.67 / Franka partial 0.22 / Maze2d 0.6
 			obs_chunks.append(obs_chunk)
 			action_chunks.append(action_chunk)
+			if(goal_conditioned):
+				goal_chunks.append(goal_chunk)
 		else:
 			pass
 			# print('NOT INCLUDING ',i)
@@ -58,8 +64,9 @@ def chunks(obs,next_obs,actions,H,stride,terminals):
 	print('len(obs_chunks): ',len(obs_chunks))
 	print('len(action_chunks): ',len(action_chunks))
 			
-	
-	return torch.stack(obs_chunks),torch.stack(action_chunks)
+	if(goal_conditioned):
+		return torch.stack(obs_chunks),torch.stack(action_chunks),torch.stack(goal_chunks)
+	return torch.stack(obs_chunks),torch.stack(action_chunks),None
 
 def reward_chunks(obs,rewards,z_q,H,stride):
 	'''

@@ -19,16 +19,24 @@ def train(model,E_optimizer,M_optimizer):
 	for batch_id, data in enumerate(train_loader):
 		data = data.cuda()
 		states = data[:,:,:model.state_dim]
-		actions = data[:,:,model.state_dim:]	 # rest are actions
+		actions = data[:,:,model.state_dim:model.state_dim+model.a_dim]	 # rest are actions
+		if(goal_conditioned):
+			goals = data[:,:,model.state_dim+model.a_dim:]
 
 		########### E STEP ###########
-		E_loss = model.get_E_loss(states,actions)
+		if(goal_conditioned):
+			E_loss = model.get_E_loss(states,actions,goals)
+		else:
+			E_loss = model.get_E_loss(states,actions)
 		model.zero_grad()
 		E_loss.backward()
 		E_optimizer.step()
 
 		########### M STEP ###########
-		M_loss = model.get_M_loss(states,actions)
+		if(goal_conditioned):
+			M_loss = model.get_M_loss(states,actions,goals)
+		else:
+			M_loss = model.get_M_loss(states,actions)
 		model.zero_grad()
 		M_loss.backward()
 		M_optimizer.step()
@@ -51,10 +59,15 @@ def test(model):
 	with torch.no_grad():
 		for batch_id, data in enumerate(test_loader):
 			data = data.cuda()
-			states = data[:,:,:model.state_dim]  # first state_dim elements are the state
-			actions = data[:,:,model.state_dim:]	 # rest are actions
+			states = data[:,:,:model.state_dim]
+			actions = data[:,:,model.state_dim:model.state_dim+model.a_dim]	 # rest are actions
+			if(goal_conditioned):
+				goals = data[:,:,model.state_dim+model.a_dim:]
 
-			embedding_loss, a_loss, sT_loss, prior_post_loss, vae_loss, total_loss = model.get_losses(states, actions)
+			if(goal_conditioned):
+				embedding_loss, a_loss, sT_loss, prior_post_loss, vae_loss, total_loss = model.get_losses(states, actions, goals)
+			else:
+				embedding_loss, a_loss, sT_loss, prior_post_loss, vae_loss, total_loss = model.get_losses(states, actions)
 
 			# log losses
 			losses.append(total_loss.item())
@@ -87,16 +100,21 @@ encoder_type = 'state_action_sequence'
 state_decoder_type = 'mlp'
 init_state_dependent = True
 load_from_checkpoint = False
-per_element_sigma = False
+per_element_sigma = True
 
-# env_name = 'antmaze-large-diverse-v0'
-env_name = 'kitchen-mixed-v0'
+goal_conditioned = True
+
+env_name = 'antmaze-large-diverse-v0'
+#env_name = 'kitchen-mixed-v0'
 #env_name = 'maze2d-large-v1'
 #env_name = 'carla-nocrash'
 #env_name = 'carla-nocrash2'
 
 states = np.load('data/'+env_name+'/observations.npy')
-next_states = np.load('data/'+env_name+'/next_observations.npy')
+if(goal_conditioned):
+	next_states = np.load('data/'+env_name+'/goals.npy')
+else:
+	next_states = np.load('data/'+env_name+'/next_observations.npy')
 actions = np.load('data/'+env_name+'/actions.npy')
 if env_name=='carla-nocrash' or env_name=='carla-nocrash2':
 	terminals = np.load('data/'+env_name+'/terminals.npy')
@@ -117,22 +135,22 @@ next_states_test = next_states[N_train:,:]
 actions_test = actions[N_train:,:]
 if env_name=='carla-nocrash' or env_name=='carla-nocrash2':
 	terminals_test =  terminals[N_train:,:]
-obs_chunks_train, action_chunks_train = chunks(states_train, next_states_train, actions_train, H, stride, terminals_train)
+obs_chunks_train, action_chunks_train, goal_chunks_train = chunks(states_train, next_states_train, actions_train, H, stride, terminals_train, goal_conditioned)
 print('states_test.shape: ',states_test.shape)
 print('MAKIN TEST SET!!!')
-obs_chunks_test,  action_chunks_test  = chunks(states_test,  next_states_test,  actions_test,  H, stride, terminals_test)
+obs_chunks_test,  action_chunks_test, goal_chunks_test  = chunks(states_test,  next_states_test,  actions_test,  H, stride, terminals_test, goal_conditioned)
 
 experiment = Experiment(api_key = 'LVi0h2WLrDaeIC6ZVITGAvzyl', project_name = 'vq_skills')
-experiment.add_tag('nocrash')
+experiment.add_tag('gc ant')
 
 # First, instantiate a skill model
 
-model = SkillModelVectorQuantizedPriorDist(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma).cuda()
+model = SkillModelVectorQuantizedPriorDist(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned).cuda()
 
 E_optimizer = torch.optim.Adam(model.encoder.parameters(), lr=lr, weight_decay=wd)
 M_optimizer = torch.optim.Adam(model.M_params.parameters(), lr=lr, weight_decay=wd)
 
-filename = 'VQPrior_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_nz_'+str(n_z)+'_zdim_'+str(z_dim)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
+filename = 'VQPriorDist_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_nz_'+str(n_z)+'_zdim_'+str(z_dim)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
 
 if load_from_checkpoint:
 	PATH = os.path.join(config.ckpt_dir,filename+'_best_sT.pth')
@@ -159,8 +177,12 @@ experiment.log_parameters({'lr':lr,
 							'per_element_sigma':per_element_sigma})
 
 
-inputs_train = torch.cat([obs_chunks_train, action_chunks_train],dim=-1)
-inputs_test  = torch.cat([obs_chunks_test,  action_chunks_test], dim=-1)
+if goal_conditioned:
+	inputs_train = torch.cat([obs_chunks_train, action_chunks_train, goal_chunks_train],dim=-1)
+	inputs_test  = torch.cat([obs_chunks_test,  action_chunks_test, goal_chunks_test], dim=-1)
+else:
+	inputs_train = torch.cat([obs_chunks_train, action_chunks_train],dim=-1)
+	inputs_test  = torch.cat([obs_chunks_test,  action_chunks_test], dim=-1)
 
 train_data = TensorDataset(inputs_train)
 test_data  = TensorDataset(inputs_test)
