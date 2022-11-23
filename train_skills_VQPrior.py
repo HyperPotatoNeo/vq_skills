@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset
 from torch.utils.data.dataloader import DataLoader
 import torch.distributions.normal as Normal
-from skill_model_vq import SkillModelVectorQuantizedPrior
+from skill_model_vq import SkillModelVectorQuantizedPrior,SkillModelVectorQuantizedPriorDist
 from utils import chunks
 import config
 import os
@@ -127,7 +127,7 @@ experiment.add_tag('nocrash')
 
 # First, instantiate a skill model
 
-model = SkillModelVectorQuantizedPrior(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma).cuda()
+model = SkillModelVectorQuantizedPriorDist(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma).cuda()
 
 E_optimizer = torch.optim.Adam(model.encoder.parameters(), lr=lr, weight_decay=wd)
 M_optimizer = torch.optim.Adam(model.M_params.parameters(), lr=lr, weight_decay=wd)
