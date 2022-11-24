@@ -263,11 +263,14 @@ class VQEncoder(nn.Module):
     -Pass through bidirectional RNN
     -Pass output of bidirectional RNN through 2 linear layers, one to get mean of z and one to get stand dev (we're estimating one z ("skill") for entire episode)
     '''
-    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,n_gru_layers=4,distribution_loss=False):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,n_gru_layers=4,distribution_loss=False,goal_conditioned=False):
         super(VQEncoder, self).__init__()
 
-
+        self.goal_conditioned = goal_conditioned
         self.state_dim = state_dim # state dimension
+        if(goal_conditioned):
+            state_dim = state_dim+2
+            self.state_dim = self.state_dim+2
         self.a_dim = a_dim # action dimension
         self.z_dim = z_dim
         self.n_z = n_z
@@ -279,7 +282,7 @@ class VQEncoder(nn.Module):
         if(distribution_loss):
             self.sig_layer  = nn.Sequential(nn.Linear(2*h_dim,h_dim),nn.ReLU(),nn.Linear(h_dim,n_z*z_dim),nn.Softplus())
 
-    def forward(self,states,actions):
+    def forward(self,states,actions,goals=None):
 
         '''
         Takes a sequence of states and actions, and infers the distribution over latent skill variable, z
@@ -291,7 +294,8 @@ class VQEncoder(nn.Module):
             z_mean: batch_size x 1 x z_dim tensor indicating mean of z distribution
             z_sig:  batch_size x 1 x z_dim tensor indicating standard deviation of z distribution
         '''
-        
+        if(self.goal_conditioned):
+            states = torch.cat([states,goals],dim=-1)
         s_emb = self.emb_layer(states)
         # through rnn
         s_emb_a = torch.cat([s_emb,actions],dim=-1)
@@ -316,7 +320,7 @@ class Decoder(nn.Module):
     -embed z
     -Pass into fully connected network to get "state T features"
     '''
-    def __init__(self,state_dim,a_dim,z_dim,h_dim, a_dist,state_dec_stop_grad, max_sig, fixed_sig, state_decoder_type, init_state_dependent, per_element_sigma):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim, a_dist,state_dec_stop_grad, max_sig, fixed_sig, state_decoder_type, init_state_dependent, per_element_sigma, goal_conditioned=False):
 
         super(Decoder,self).__init__()
         
@@ -324,6 +328,7 @@ class Decoder(nn.Module):
         self.state_dim = state_dim
         self.a_dim = a_dim
         self.z_dim = z_dim
+        self.goal_conditioned = goal_conditioned
 
         if state_decoder_type == 'mlp':
             self.abstract_dynamics = AbstractDynamics(state_dim,z_dim,h_dim,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
@@ -332,6 +337,10 @@ class Decoder(nn.Module):
         else:
             print('PICK VALID STATE DECODER TYPE!!!')
             assert False
+
+        if(goal_conditioned):
+            state_dim = state_dim+2
+            self.state_dim = self.state_dim+2
         if a_dist != 'autoregressive':
             self.ll_policy = LowLevelPolicy(state_dim,a_dim,z_dim,h_dim, a_dist, max_sig = max_sig, fixed_sig=fixed_sig)
         else:
@@ -347,7 +356,7 @@ class Decoder(nn.Module):
         self.a_dist = a_dist
 
         
-    def forward(self,states,actions,z):
+    def forward(self,states,actions,z,goals=None):
 
         '''
         INPUTS: 
@@ -359,9 +368,10 @@ class Decoder(nn.Module):
             a_mean: batch_size x T x a_dim tensor of action means for each t in {0.,,,.T}
             a_sig:  batch_size x T x a_dim tensor of action standard devs for each t in {0.,,,.T}
         '''
-        
         s_0 = states[:,0:1,:]
         s_T = states[:,-1:,:]
+        if(self.goal_conditioned):
+            states = torch.cat([states,goals],dim=-1)
 
         if self.a_dist != 'autoregressive':
             a_mean,a_sig = self.ll_policy(states,z)
@@ -1004,7 +1014,7 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
 
 class SkillModelVectorQuantizedPrior(nn.Module):
-    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True,goal_conditioned=False):
         super(SkillModelVectorQuantizedPrior, self).__init__()
 
         print('a_dist: ', a_dist)
@@ -1013,13 +1023,14 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         self.encoder_type = encoder_type
         self.state_dec_stop_grad = state_dec_stop_grad
         self.n_z = n_z
+        self.goal_conditioned = goal_conditioned
         
-        self.encoder = VQEncoder(state_dim,a_dim,z_dim,h_dim,n_z)
+        self.encoder = VQEncoder(state_dim,a_dim,z_dim,h_dim,n_z,goal_conditioned=goal_conditioned)
 
-        self.decoder = Decoder(state_dim,a_dim,z_dim*n_z,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma)
+        self.decoder = Decoder(state_dim,a_dim,z_dim*n_z,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned)
         #self.prior   = Prior(state_dim,z_dim,h_dim)
         self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta,n_z,multi_vector=True)
-        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim)
+        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim,goal_conditioned=goal_conditioned)
         self.beta    = beta
         self.alpha   = alpha
         self.ent_pen = ent_pen
@@ -1045,37 +1056,54 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         pass
 
 
-    def get_E_loss(self,states,actions):
+    def get_E_loss(self,states,actions,goals=None):
 
         batch_size,T,_ = states.shape
         denom = T*batch_size
         
-        z_post_means = self.encoder(states,actions)
+        if self.goal_conditioned:
+            z_post_means = self.encoder(states,actions,goals)
+        else:
+            z_post_means = self.encoder(states,actions)
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
-        
-        z_prior = self.prior(states[:,0:1])
+
+        if self.goal_conditioned:
+            z_prior = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior = self.prior(states[:,0:1])
         posterior_loss = torch.sum((z_post_means - z_prior)**2)/denom
         #prior_loss = self.cross_entropy_loss(z_prior,torch.squeeze(min_encoding_indices.detach(),dim=1))
-
-        sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
+        if self.goal_conditioned:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q,goals)
+        else:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
         a_dist    = Normal.Normal(a_means,a_sigs)
         a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
 
-        return a_loss + self.alpha*posterior_loss + embedding_loss
+        return a_loss + 0*self.alpha*posterior_loss + embedding_loss
 
-    def get_M_loss(self,states,actions):
+    def get_M_loss(self,states,actions,goals=None):
         batch_size,T,_ = states.shape
         denom = T*batch_size
         
-        z_post_means = self.encoder(states,actions)
+        if self.goal_conditioned:
+            z_post_means = self.encoder(states,actions,goals)
+        else:
+            z_post_means = self.encoder(states,actions)
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
         
-        z_prior = self.prior(states[:,0:1])
+        if self.goal_conditioned:
+            z_prior = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior = self.prior(states[:,0:1])
         prior_loss = torch.sum((z_post_means - z_prior)**2)/denom
 
-        sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
+        if self.goal_conditioned:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q,goals)
+        else:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
 
         sT_dist  = Normal.Normal(sT_mean,sT_sig)
         a_dist    = Normal.Normal(a_means,a_sigs)
@@ -1087,7 +1115,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         return sT_loss + a_loss + prior_loss + embedding_loss
 
     
-    def get_losses(self,states,actions):
+    def get_losses(self,states,actions,goals=None):
         '''
         Computes various components of the loss:
         L = E_q [log P(s_T|s_0,z)] 
@@ -1099,15 +1127,24 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         batch_size,T,_ = states.shape
         denom = T*batch_size
         
-        z_post_means = self.encoder(states,actions)
+        if self.goal_conditioned:
+            z_post_means = self.encoder(states,actions,goals)
+        else:
+            z_post_means = self.encoder(states,actions)
 
         z_q, min_encoding_indices, embedding_loss = self.vector_quantizer(z_post_means)
 
-        z_prior = self.prior(states[:,0:1])
+        if self.goal_conditioned:
+            z_prior = self.prior(states[:,0:1],goals[:,0:1])
+        else:
+            z_prior = self.prior(states[:,0:1])
 
         prior_post_loss = torch.sum((z_post_means - z_prior)**2)/denom
 
-        sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
+        if self.goal_conditioned:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q,goals)
+        else:
+            sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q)
 
         sT_dist  = Normal.Normal(sT_mean,sT_sig)
         a_dist    = Normal.Normal(a_means,a_sigs)

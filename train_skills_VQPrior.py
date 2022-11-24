@@ -110,12 +110,12 @@ env_name = 'antmaze-large-diverse-v0'
 #env_name = 'carla-nocrash'
 #env_name = 'carla-nocrash2'
 
-states = np.load('data/'+env_name+'/observations.npy')
+states = np.load('data/'+env_name+'/observations.npy')[:10000]
 if(goal_conditioned):
-	next_states = np.load('data/'+env_name+'/goals.npy')
+	next_states = np.load('data/'+env_name+'/goals.npy')[:10000]
 else:
 	next_states = np.load('data/'+env_name+'/next_observations.npy')
-actions = np.load('data/'+env_name+'/actions.npy')
+actions = np.load('data/'+env_name+'/actions.npy')[:10000]
 if env_name=='carla-nocrash' or env_name=='carla-nocrash2':
 	terminals = np.load('data/'+env_name+'/terminals.npy')
 terminals_train = None
@@ -145,7 +145,7 @@ experiment.add_tag('gc ant')
 
 # First, instantiate a skill model
 
-model = SkillModelVectorQuantizedPriorDist(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned).cuda()
+model = SkillModelVectorQuantizedPrior(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned).cuda()
 
 E_optimizer = torch.optim.Adam(model.encoder.parameters(), lr=lr, weight_decay=wd)
 M_optimizer = torch.optim.Adam(model.M_params.parameters(), lr=lr, weight_decay=wd)
