@@ -149,6 +149,8 @@ model = SkillModelVectorQuantizedPrior(state_dim, a_dim, z_dim, h_dim, n_z, num_
 
 E_optimizer = torch.optim.Adam(model.encoder.parameters(), lr=lr, weight_decay=wd)
 M_optimizer = torch.optim.Adam(model.M_params.parameters(), lr=lr, weight_decay=wd)
+E_scheduler = torch.optim.lr_scheduler.StepLR(E_optimizer, step_size=100)
+M_scheduler = torch.optim.lr_scheduler.StepLR(M_optimizer, step_size=100)
 
 filename = 'VQPriorDist_'+env_name+'_num_embeddings_'+str(num_embeddings)+'_nz_'+str(n_z)+'_zdim_'+str(z_dim)+'_H_'+str(H)+'_l2reg_'+str(wd)+'_a_'+str(alpha)+'_b_'+str(beta)+'_per_el_sig_'+str(per_element_sigma)+'_log'
 
@@ -247,6 +249,8 @@ for i in range(n_epochs):
 	
 
 	E_loss,M_loss = train(model,E_optimizer,M_optimizer)
+	E_scheduler.step()
+	M_scheduler.step()
 	
 	print("--------TRAIN---------")
 	
