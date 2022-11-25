@@ -95,6 +95,7 @@ stride = 1
 n_epochs = 50000
 test_split = .2
 a_dist = 'autoregressive'
+tanh_normal = True
 state_dependent_prior = True
 encoder_type = 'state_action_sequence'
 state_decoder_type = 'mlp'
@@ -145,7 +146,7 @@ experiment.add_tag('gc ant')
 
 # First, instantiate a skill model
 
-model = SkillModelVectorQuantizedPrior(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned).cuda()
+model = SkillModelVectorQuantizedPrior(state_dim, a_dim, z_dim, h_dim, n_z, num_embeddings, a_dist=a_dist,state_dec_stop_grad=False,beta=beta,alpha=alpha,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned,tanh_normal=tanh_normal).cuda()
 
 E_optimizer = torch.optim.Adam(model.encoder.parameters(), lr=lr, weight_decay=wd)
 M_optimizer = torch.optim.Adam(model.M_params.parameters(), lr=lr, weight_decay=wd)
