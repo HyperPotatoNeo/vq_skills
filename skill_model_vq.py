@@ -1014,7 +1014,7 @@ class SkillModelVectorQuantizedPriorDist(nn.Module):
 
 
 class SkillModelVectorQuantizedPrior(nn.Module):
-    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True,goal_conditioned=False,tanh_normal=False):
+    def __init__(self,state_dim,a_dim,z_dim,h_dim,n_z,num_embeddings=128,a_dist='normal',state_dec_stop_grad=False,beta=0.25,alpha=1.0,max_sig=None,fixed_sig=None,ent_pen=0,encoder_type='state_action_sequence',state_decoder_type='mlp',init_state_dependent=True,per_element_sigma=True,goal_conditioned=False,tanh_normal=False,distribution_loss=False):
         super(SkillModelVectorQuantizedPrior, self).__init__()
 
         print('a_dist: ', a_dist)
@@ -1025,6 +1025,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         self.n_z = n_z
         self.goal_conditioned = goal_conditioned
         self.tanh_normal = tanh_normal
+        self.distribution_loss = distribution_loss
         if(tanh_normal):
             self.tanh_transform = torch.distributions.transforms.TanhTransform(cache_size=0)
         
@@ -1033,7 +1034,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         self.decoder = Decoder(state_dim,a_dim,z_dim*n_z,h_dim, a_dist, state_dec_stop_grad,max_sig=max_sig,fixed_sig=fixed_sig,state_decoder_type=state_decoder_type,init_state_dependent=init_state_dependent,per_element_sigma=per_element_sigma,goal_conditioned=goal_conditioned)
         #self.prior   = Prior(state_dim,z_dim,h_dim)
         self.vector_quantizer = VectorQuantizer(z_dim,num_embeddings,beta,n_z,multi_vector=True)
-        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim,goal_conditioned=goal_conditioned)
+        self.prior = VQPrior(state_dim,z_dim,n_z,h_dim,goal_conditioned=goal_conditioned,distribution_loss=distribution_loss)
         self.beta    = beta
         self.alpha   = alpha
         self.ent_pen = ent_pen
@@ -1074,7 +1075,10 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         if self.goal_conditioned:
             z_prior = self.prior(states[:,0:1],goals[:,0:1])
         else:
-            z_prior = self.prior(states[:,0:1])
+            if(self.distribution_loss):
+                z_prior,_ = self.prior(states[:,0:1])
+            else:
+                z_prior = self.prior(states[:,0:1])
         posterior_loss = torch.sum((z_post_means - z_prior)**2)/denom
         #prior_loss = self.cross_entropy_loss(z_prior,torch.squeeze(min_encoding_indices.detach(),dim=1))
         if self.goal_conditioned:
@@ -1087,7 +1091,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
             a_dist = torch.distributions.transformed_distribution.TransformedDistribution(a_dist,self.tanh_transform)
         a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
 
-        return a_loss + 0*self.alpha*posterior_loss + embedding_loss
+        return a_loss + self.alpha*posterior_loss + 2*embedding_loss + 0.001*torch.sum(z_post_means**2)
 
     def get_M_loss(self,states,actions,goals=None):
         batch_size,T,_ = states.shape
@@ -1103,8 +1107,13 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         if self.goal_conditioned:
             z_prior = self.prior(states[:,0:1],goals[:,0:1])
         else:
-            z_prior = self.prior(states[:,0:1])
-        prior_loss = torch.sum((z_post_means - z_prior)**2)/denom
+            if self.distribution_loss:
+                z_prior_means,z_prior_sigs = self.prior(states[:,0:1])
+                prior_dist = Normal.Normal(z_prior_means,z_prior_sigs)
+                prior_loss = -torch.sum(prior_dist.log_prob(z_q))/batch_size
+            else:
+                z_prior = self.prior(states[:,0:1])
+                prior_loss = torch.sum((z_q - z_prior)**2)/denom
 
         if self.goal_conditioned:
             sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q,goals)
@@ -1148,7 +1157,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         else:
             z_prior = self.prior(states[:,0:1])
 
-        prior_post_loss = torch.sum((z_post_means - z_prior)**2)/denom
+        prior_post_loss = torch.sum((z_q - z_prior)**2)/denom
 
         if self.goal_conditioned:
             sT_mean, sT_sig, a_means, a_sigs = self.decoder(states,actions,z_q,goals)
@@ -1164,7 +1173,7 @@ class SkillModelVectorQuantizedPrior(nn.Module):
         sT = states[:,-1:,:]
         sT_loss = -torch.sum(sT_dist.log_prob(sT)) / denom
         a_loss =  -torch.sum(a_dist.log_prob(actions)) / denom
-        total_loss = sT_loss + a_loss + embedding_loss + prior_post_loss
+        total_loss = a_loss + embedding_loss + prior_post_loss
         vae_loss = a_loss + prior_post_loss
 
         return embedding_loss, a_loss, sT_loss, prior_post_loss, vae_loss, total_loss
